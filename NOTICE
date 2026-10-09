@@ -1,0 +1,19 @@
+Zayn's MiniMind
+
+This project includes code and tokenizer assets adapted from MiniMind:
+https://github.com/jingyaogong/minimind
+Source snapshot: f659b55761b754d306bd140573493a6543cafd7f
+Upstream author: Jingyao Gong and MiniMind contributors
+License: Apache License, Version 2.0 (see LICENSE)
+
+Derived components: model/model_minimind.py, model/model_lora.py,
+model/tokenizer.json, and model/tokenizer_config.json.
+
+Modifications include English source comments, descriptive attention variables,
+configuration validation, explicit causal/padding masks with cached decoding,
+embedding-input support, and adapter validation/dtype handling. Parameter keys
+and tokenizer vocabulary IDs are retained for checkpoint compatibility.
+
+The project training pipeline, configurations, generated fixtures, tests, and
+CI are maintained separately from the upstream trainers. Upstream documentation,
+demos, images, and duplicate training entry points are omitted.

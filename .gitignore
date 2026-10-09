@@ -1,0 +1,12 @@
+# Generated runs, checkpoints, caches, and local environments.
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+.pytest_cache/
+.ruff_cache/
+runs/
+checkpoints/
+*.pt
+*.pth
+*.safetensors
