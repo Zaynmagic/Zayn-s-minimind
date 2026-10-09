@@ -7,15 +7,15 @@ permissions:
 
 jobs:
   cpu:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       OMP_NUM_THREADS: '2'
       TOKENIZERS_PARALLELISM: 'false'
       HF_HUB_OFFLINE: '1'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
