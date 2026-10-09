@@ -1,6 +1,5 @@
-# Check the model and training helpers.
-
 import copy
+import json
 import math
 import random
 from pathlib import Path
@@ -11,7 +10,7 @@ from transformers import AutoTokenizer
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
 from model.model_lora import apply_lora
 from training.data import LazyBatches, encode_record
-from training.objectives import (dpo_loss, grpo_advantages, gae, ppo_loss, distill_loss)
+from training.objectives import dpo_loss, grpo_advantages, gae, ppo_loss, distill_loss
 from training.engine import optimize, save_checkpoint, load_checkpoint
 from training.run import merge_adapters
 from training.evaluate import greedy
@@ -51,7 +50,9 @@ def test_future_tokens_do_not_change_prefix():
     second = first.clone()
     second[0, 3:] = torch.tensor([91, 92])
     with torch.no_grad():
-        torch.testing.assert_close(active(first).logits[:, :3], active(second).logits[:, :3])
+        torch.testing.assert_close(
+            active(first).logits[:, :3], active(second).logits[:, :3]
+        )
 
 
 @pytest.mark.parametrize("flash", [True, False])
@@ -60,7 +61,9 @@ def test_kv_cache_matches_full_forward(flash):
     ids = torch.tensor([[1, 41, 42, 43, 44]])
     with torch.no_grad():
         prefix = active(ids[:, :3], use_cache=True)
-        suffix = active(ids[:, 3:], past_key_values=prefix.past_key_values, use_cache=True)
+        suffix = active(
+            ids[:, 3:], past_key_values=prefix.past_key_values, use_cache=True
+        )
         full = active(ids).logits[:, 3:]
     torch.testing.assert_close(suffix.logits, full, rtol=1e-4, atol=1e-5)
     assert prefix.past_key_values[0][0].shape[2] == 2
@@ -71,7 +74,9 @@ def test_sdpa_matches_manual_attention():
     manual.load_state_dict(fused.state_dict())
     ids = torch.tensor([[1, 41, 42, 43]])
     with torch.no_grad():
-        torch.testing.assert_close(fused(ids).logits, manual(ids).logits, rtol=1e-4, atol=1e-5)
+        torch.testing.assert_close(
+            fused(ids).logits, manual(ids).logits, rtol=1e-4, atol=1e-5
+        )
 
 
 @pytest.mark.parametrize("flash", [True, False])
@@ -84,11 +89,15 @@ def test_left_padding_and_chunked_cache_match_unpadded_tokens(flash):
         unpadded = active(padded[:, 2:])
         prefix = active(padded[:, :3], attention_mask=mask[:, :3], use_cache=True)
         suffix = active(
-            padded[:, 3:], attention_mask=mask,
-            past_key_values=prefix.past_key_values, use_cache=True,
+            padded[:, 3:],
+            attention_mask=mask,
+            past_key_values=prefix.past_key_values,
+            use_cache=True,
         )
     assert torch.isfinite(whole.logits).all()
-    torch.testing.assert_close(whole.logits[:, 2:], unpadded.logits, rtol=1e-4, atol=1e-5)
+    torch.testing.assert_close(
+        whole.logits[:, 2:], unpadded.logits, rtol=1e-4, atol=1e-5
+    )
     torch.testing.assert_close(suffix.logits, whole.logits[:, 3:], rtol=1e-4, atol=1e-5)
 
 
@@ -97,10 +106,17 @@ def test_all_padding_context_has_finite_gradients_and_matches_sdpa():
     manual.load_state_dict(fused.state_dict())
     ids = torch.tensor([[0, 0, 1, 41]])
     mask = torch.tensor([[0, 0, 1, 1]])
-    fused_output, manual_output = fused(ids, attention_mask=mask), manual(ids, attention_mask=mask)
-    torch.testing.assert_close(fused_output.logits, manual_output.logits, rtol=1e-4, atol=1e-5)
+    fused_output, manual_output = fused(ids, attention_mask=mask), manual(
+        ids, attention_mask=mask
+    )
+    torch.testing.assert_close(
+        fused_output.logits, manual_output.logits, rtol=1e-4, atol=1e-5
+    )
     manual_output.logits.square().mean().backward()
-    assert all(parameter.grad is None or torch.isfinite(parameter.grad).all() for parameter in manual.parameters())
+    assert all(
+        parameter.grad is None or torch.isfinite(parameter.grad).all()
+        for parameter in manual.parameters()
+    )
 
 
 def test_embedding_inputs_match_token_inputs_and_keep_gradients():
@@ -116,14 +132,17 @@ def test_embedding_inputs_match_token_inputs_and_keep_gradients():
         active(ids, inputs_embeds=embeddings)
 
 
-@pytest.mark.parametrize("changes", [
-    {"num_attention_heads": 0},
-    {"num_key_value_heads": 3},
-    {"head_dim": 7},
-    {"hidden_size": 30},
-    {"dropout": 1.0},
-    {"use_moe": True, "num_experts": 2, "num_experts_per_tok": 3},
-])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"num_attention_heads": 0},
+        {"num_key_value_heads": 3},
+        {"head_dim": 7},
+        {"hidden_size": 30},
+        {"dropout": 1.0},
+        {"use_moe": True, "num_experts": 2, "num_experts_per_tok": 3},
+    ],
+)
 def test_invalid_architecture_is_rejected(changes):
     config = {"hidden_size": 32, "num_attention_heads": 4, "num_key_value_heads": 2}
     with pytest.raises(ValueError):
@@ -218,7 +237,9 @@ def test_lora_only_updates_adapters_and_merges():
     apply_lora(active, rank=4)
     for name, p in active.named_parameters():
         p.requires_grad_(".lora." in name)
-    optimizer = torch.optim.AdamW([p for p in active.parameters() if p.requires_grad], lr=0.01)
+    optimizer = torch.optim.AdamW(
+        [p for p in active.parameters() if p.requires_grad], lr=0.01
+    )
     ids = torch.tensor([[1, 41, 42, 43]])
     active(input_ids=ids, labels=ids).loss.backward()
     optimizer.step()
@@ -227,11 +248,16 @@ def test_lora_only_updates_adapters_and_merges():
             assert torch.equal(p, original[name])
     merged = merge_adapters(active).eval()
     with torch.no_grad():
-        torch.testing.assert_close(active(ids).logits, merged(ids).logits, rtol=1e-4, atol=1e-5)
+        torch.testing.assert_close(
+            active(ids).logits, merged(ids).logits, rtol=1e-4, atol=1e-5
+        )
 
 
 def test_dpo_prefers_the_chosen_response():
-    chosen, rejected = (torch.tensor([-2.0], requires_grad=True), torch.tensor([-2.0], requires_grad=True))
+    chosen, rejected = (
+        torch.tensor([-2.0], requires_grad=True),
+        torch.tensor([-2.0], requires_grad=True),
+    )
     loss = dpo_loss(chosen, rejected, chosen.detach(), rejected.detach())
     assert loss.item() == pytest.approx(math.log(2))
     loss.backward()
@@ -245,7 +271,9 @@ def test_constant_grpo_rewards_have_zero_advantages():
 
 
 def test_grpo_normalizes_each_prompt_group():
-    advantages = grpo_advantages(torch.tensor([1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0]), 4).view(2, 4)
+    advantages = grpo_advantages(
+        torch.tensor([1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0]), 4
+    ).view(2, 4)
     torch.testing.assert_close(advantages.mean(-1), torch.zeros(2))
     torch.testing.assert_close(advantages.std(-1, unbiased=False), torch.ones(2))
 
@@ -334,7 +362,52 @@ def test_hf_export_roundtrip_and_cached_generation(tmp_path):
     ids = torch.tensor([[1, 41, 42]])
     with torch.no_grad():
         torch.testing.assert_close(active(ids).logits, restored(ids).logits)
-        assert torch.equal(greedy(restored, ids, cache=True), greedy(restored, ids, cache=False))
+        assert torch.equal(
+            greedy(restored, ids, cache=True), greedy(restored, ids, cache=False)
+        )
+
+
+def test_training_export_preserves_untied_embedding_weights(tmp_path):
+    from training.run import execute, parser
+
+    config = json.loads((ROOT / "configs/tiny.json").read_text())
+    config["tie_word_embeddings"] = False
+    config_path = tmp_path / "untied.json"
+    config_path.write_text(json.dumps(config))
+    output_path = tmp_path / "run"
+    args = parser().parse_args(
+        [
+            "--config",
+            str(config_path),
+            "--stages",
+            "sft",
+            "--steps",
+            "1",
+            "--output",
+            str(output_path),
+        ]
+    )
+    execute(args)
+
+    checkpoint = torch.load(output_path / "sft.pt", weights_only=False)
+    restored = MiniMindForCausalLM.from_pretrained(output_path / "hf").eval()
+    assert restored.config.tie_word_embeddings is False
+    assert restored.model.embed_tokens.weight is not restored.lm_head.weight
+    for name, weights in restored.state_dict().items():
+        torch.testing.assert_close(weights, checkpoint["model"][name], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("stage", ["ppo", "grpo"])
+def test_policy_training_rejects_dropout(tmp_path, stage):
+    from training.run import execute, parser
+
+    config = json.loads((ROOT / "configs/tiny.json").read_text())
+    config["dropout"] = 0.1
+    config_path = tmp_path / "dropout.json"
+    config_path.write_text(json.dumps(config))
+    args = parser().parse_args(["--config", str(config_path), "--stages", stage])
+    with pytest.raises(ValueError, match="dropout=0"):
+        execute(args)
 
 
 def test_resumed_training_matches_uninterrupted_training(tmp_path):
@@ -352,8 +425,16 @@ def test_resumed_training_matches_uninterrupted_training(tmp_path):
         "--batch-size",
         "1",
     ]
-    execute(parser().parse_args(common + ["--steps", "4", "--output", str(tmp_path / "full")]))
-    execute(parser().parse_args(common + ["--steps", "2", "--output", str(tmp_path / "split")]))
+    execute(
+        parser().parse_args(
+            common + ["--steps", "4", "--output", str(tmp_path / "full")]
+        )
+    )
+    execute(
+        parser().parse_args(
+            common + ["--steps", "2", "--output", str(tmp_path / "split")]
+        )
+    )
     execute(
         parser().parse_args(
             common

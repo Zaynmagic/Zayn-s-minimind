@@ -1,5 +1,3 @@
-# Read JSONL and make masked token batches.
-
 import hashlib
 import json
 from collections.abc import Sequence
@@ -22,7 +20,8 @@ class LazyBatches(Sequence):
 
     def __getitem__(self, index):
         if isinstance(index, slice):
-            return [self.build_batch(position) for position in range(*index.indices(self.count))]
+            positions = range(*index.indices(self.count))
+            return [self.build_batch(position) for position in positions]
         if index < 0:
             index += self.count
         if not 0 <= index < self.count:
@@ -32,7 +31,9 @@ class LazyBatches(Sequence):
 
 def read_records(path):
     records = []
-    for line_number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, line in enumerate(
+        Path(path).read_text(encoding="utf-8").splitlines(), 1
+    ):
         if not line.strip():
             continue
         try:
@@ -76,23 +77,27 @@ def encode_record(row, tokenizer, length, pretrain=False):
     else:
         messages = row.get("conversations")
         validate_messages(messages)
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+        text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False
+        )
         ids = tokenizer.encode(text, add_special_tokens=False)[:length]
         labels = [-100] * len(ids)
         marker = tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
-        i = 0
-        while i < len(ids):
-            if ids[i : i + len(marker)] == marker:
-                i += len(marker)
-                while i < len(ids):
-                    labels[i] = ids[i]
-                    i += 1
-                    if ids[i - 1] == tokenizer.eos_token_id:
+        position = 0
+        while position < len(ids):
+            if ids[position : position + len(marker)] == marker:
+                position += len(marker)
+                while position < len(ids):
+                    labels[position] = ids[position]
+                    position += 1
+                    if ids[position - 1] == tokenizer.eos_token_id:
                         break
             else:
-                i += 1
+                position += 1
         if not any(value != -100 for value in labels[1:]):
-            raise ValueError("no assistant targets remain after truncation; increase sequence length")
+            raise ValueError(
+                "no assistant targets remain after truncation; increase sequence length"
+            )
     padding = length - len(ids)
     attention_mask = [1] * len(ids) + [0] * padding
     ids += [tokenizer.pad_token_id] * padding

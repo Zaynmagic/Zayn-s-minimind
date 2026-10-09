@@ -1,5 +1,3 @@
-# Run the training stages and save checkpoints.
-
 import argparse
 import copy
 import datetime
@@ -55,8 +53,8 @@ class ActorCritic(nn.Module):
 
 
 def actor_of(model):
-    raw = unwrap(model)
-    return raw.actor if isinstance(raw, ActorCritic) else raw
+    unwrapped = unwrap(model)
+    return unwrapped.actor if isinstance(unwrapped, ActorCritic) else unwrapped
 
 
 def to_device(batch, device):
@@ -71,19 +69,31 @@ def frozen_copy(model):
 
 
 @torch.no_grad()
-def rollout(actor, rows, tokenizer, device, prompt_length, new_tokens, group_size=1, temperature=1.0):
-    prompts, expected = [], []
+def rollout(
+    actor,
+    rows,
+    tokenizer,
+    device,
+    prompt_length,
+    new_tokens,
+    group_size=1,
+    temperature=1.0,
+):
+    prompts = []
+    expected = []
     for row in rows:
         messages = row["conversations"]
         if messages[-1]["role"] != "assistant":
-            raise ValueError("RL rows need a final assistant answer for the selected local reward")
-        ids = tokenizer.apply_chat_template(
+            raise ValueError(
+                "RL rows need a final assistant answer for the selected local reward"
+            )
+        prompt_ids = tokenizer.apply_chat_template(
             messages[:-1], tokenize=True, add_generation_prompt=True
         )[-prompt_length:]
-        if not ids:
+        if not prompt_ids:
             raise ValueError("empty rollout prompt")
         for _ in range(group_size):
-            prompts.append(ids)
+            prompts.append(prompt_ids)
             expected.append(messages[-1]["content"])
     width = max(map(len, prompts))
     input_ids = torch.tensor(
@@ -95,7 +105,8 @@ def rollout(actor, rows, tokenizer, device, prompt_length, new_tokens, group_siz
     )
     was_training = actor.training
     actor.eval()
-    cache, current = None, input_ids
+    cache = None
+    current = input_ids
     done = torch.zeros(len(prompts), dtype=torch.bool, device=device)
     completion_masks = []
     for _ in range(new_tokens):
@@ -105,20 +116,23 @@ def rollout(actor, rows, tokenizer, device, prompt_length, new_tokens, group_siz
             past_key_values=cache,
             use_cache=True,
         )
-        sampled = torch.multinomial((output.logits[:, -1].float() / temperature).softmax(-1), 1).squeeze(-1)
+        probabilities = (output.logits[:, -1].float() / temperature).softmax(-1)
+        sampled = torch.multinomial(probabilities, 1).squeeze(-1)
         sampled = torch.where(done, tokenizer.pad_token_id, sampled)
         valid = ~done
         completion_masks.append(valid)
         done |= sampled.eq(tokenizer.eos_token_id)
         input_ids = torch.cat((input_ids, sampled[:, None]), 1)
         attention_mask = torch.cat((attention_mask, valid.long()[:, None]), 1)
-        current, cache = sampled[:, None], output.past_key_values
+        current = sampled[:, None]
+        cache = output.past_key_values
     actor.train(was_training)
     labels = input_ids.clone()
     labels[:, :width] = -100
     completion_mask = torch.stack(completion_masks, 1)
     labels[:, width:][~completion_mask] = -100
-    return ({"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}, expected, width)
+    batch = {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+    return batch, expected, width
 
 
 def rewards_for(batch, expected, width, tokenizer, mode):
@@ -143,10 +157,13 @@ def rewards_for(batch, expected, width, tokenizer, mode):
 
 
 def merge_adapters(model):
-    state = {key: value for key, value in model.state_dict().items() if ".lora." not in key}
+    state = {
+        key: value for key, value in model.state_dict().items() if ".lora." not in key
+    }
     for name, module in model.named_modules():
         if hasattr(module, "lora"):
-            state[name + ".weight"] = (module.weight.detach() + module.lora.B.weight @ module.lora.A.weight)
+            adapter_update = module.lora.B.weight @ module.lora.A.weight
+            state[name + ".weight"] = module.weight.detach() + adapter_update
     merged = MiniMindForCausalLM(model.config).to(model.device)
     merged.load_state_dict(state)
     return merged
@@ -156,7 +173,9 @@ def execute(args):
     if args.steps < 1 or args.batch_size < 1 or args.new_tokens < 1:
         raise ValueError("steps, batch size, and new tokens must be positive")
     if args.temperature <= 0 or args.length <= args.new_tokens:
-        raise ValueError("temperature must be positive and sequence length must exceed generated length")
+        raise ValueError(
+            "temperature must be positive and sequence length must exceed generated length"
+        )
     stages = args.stages.split(",")
     if any(stage not in STAGES for stage in stages):
         raise ValueError(f"stages must come from {STAGES}")
@@ -170,8 +189,13 @@ def execute(args):
         raise ValueError("expected the upstream 6,400-token BPE tokenizer")
     config_values = json.loads(Path(args.config).read_text())
     model = MiniMindForCausalLM(MiniMindConfig(**config_values)).to(device)
+    if model.config.dropout > 0 and any(stage in {"ppo", "grpo"} for stage in stages):
+        # Repeated policy evaluations must use the same token probabilities.
+        raise ValueError("PPO/GRPO require dropout=0 for consistent policy ratios")
     if args.init_checkpoint:
-        initial = torch.load(args.init_checkpoint, map_location="cpu", weights_only=False)
+        initial = torch.load(
+            args.init_checkpoint, map_location="cpu", weights_only=False
+        )
         model.load_state_dict(initial.get("model", initial))
     report = {
         "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -191,17 +215,30 @@ def execute(args):
     }
     for stage in stages:
         if stage == "moe":
-            moe_config = {**config_values, "use_moe": True, "num_experts": 4, "num_experts_per_tok": 1}
+            # Expert weights have a different layout from the dense feed-forward layers.
+            moe_config = {
+                **config_values,
+                "use_moe": True,
+                "num_experts": 4,
+                "num_experts_per_tok": 1,
+            }
             model = MiniMindForCausalLM(MiniMindConfig(**moe_config)).to(device)
         teacher = None
         if stage == "distill":
             # Same vocab, one extra layer when using the random test teacher.
-            teacher_config = {**config_values, "num_hidden_layers": config_values["num_hidden_layers"] + 1}
+            teacher_config = {
+                **config_values,
+                "num_hidden_layers": config_values["num_hidden_layers"] + 1,
+            }
             teacher_state = None
             if args.teacher_checkpoint:
-                teacher_state = torch.load(args.teacher_checkpoint, map_location="cpu", weights_only=False)
+                teacher_state = torch.load(
+                    args.teacher_checkpoint, map_location="cpu", weights_only=False
+                )
                 if "config" not in teacher_state:
-                    raise ValueError("teacher checkpoint must include its model configuration")
+                    raise ValueError(
+                        "teacher checkpoint must include its model configuration"
+                    )
                 teacher_config = teacher_state["config"]
                 if teacher_config.get("vocab_size") != model.config.vocab_size:
                     raise ValueError("teacher and student must share a vocabulary")
@@ -220,8 +257,8 @@ def execute(args):
         if stage == "lora":
             model.requires_grad_(False)
             apply_lora(model, rank=args.lora_rank)
-            for name, p in model.named_parameters():
-                p.requires_grad_(".lora." in name)
+            for name, parameter in model.named_parameters():
+                parameter.requires_grad_(".lora." in name)
         else:
             model.requires_grad_(True)
         model.zero_grad(set_to_none=True)
@@ -229,8 +266,11 @@ def execute(args):
         if stage == "ppo":
             model = ActorCritic(model).to(device)
         model = wrap(model, device)
-        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.lr)
-        raw = unwrap(model)
+        trainable_parameters = [
+            parameter for parameter in model.parameters() if parameter.requires_grad
+        ]
+        optimizer = torch.optim.AdamW(trainable_parameters, lr=args.lr)
+        unwrapped = unwrap(model)
         start_step = 0
         resumed_scaler = None
         if args.resume:
@@ -244,14 +284,17 @@ def execute(args):
         world_size = dist.get_world_size() if dist.is_initialized() else 1
         rank = dist.get_rank() if dist.is_initialized() else 0
 
-        def record_index(index, j):
-            return (((start_step + index) * world_size + rank) * args.batch_size + j) % len(records)
+        def record_index(batch_index, row_offset):
+            global_batch = (start_step + batch_index) * world_size + rank
+            row_index = global_batch * args.batch_size + row_offset
+            return row_index % len(records)
 
-        data_name = ("pretrain" if stage == "pretrain" else "dpo" if stage == "dpo" else "sft")
+        data_name = stage if stage in {"pretrain", "dpo"} else "sft"
         data_path = Path(args.data) / f"{data_name}.jsonl"
         records = read_records(data_path)
         report["data_hashes"][data_name] = file_hash(data_path)
         if stage == "dpo":
+
             def build_batch(index):
                 rows = [records[record_index(index, j)] for j in range(args.batch_size)]
                 chosen = stack_rows(
@@ -276,7 +319,8 @@ def execute(args):
                 logp, mask = token_logp(output.logits, batch["labels"])
                 with torch.no_grad():
                     ref_logp, _ = token_logp(reference(**batch).logits, batch["labels"])
-                scores, ref_scores = (logp * mask).sum(-1), (ref_logp * mask).sum(-1)
+                scores = (logp * mask).sum(-1)
+                ref_scores = (ref_logp * mask).sum(-1)
                 half = scores.numel() // 2
                 return (
                     dpo_loss(
@@ -288,12 +332,15 @@ def execute(args):
                     )
                     + output.aux_loss
                 )
+
         elif stage in {"ppo", "grpo"}:
             if args.accumulation != 1:
                 raise ValueError("on-policy PPO/GRPO use --accumulation 1")
             encoded = LazyBatches(
                 args.steps,
-                lambda index: [records[record_index(index, j)] for j in range(args.batch_size)],
+                lambda index: [
+                    records[record_index(index, j)] for j in range(args.batch_size)
+                ],
             )
             reward_summaries = []
 
@@ -318,27 +365,40 @@ def execute(args):
                 )
                 with torch.no_grad():
                     old_output = unwrap(active)(**batch)
-                    old_logp, mask = token_logp(old_output.logits / args.temperature, batch["labels"])
-                    ref_logp, _ = token_logp(reference(**batch).logits / args.temperature, batch["labels"])
+                    old_logp, mask = token_logp(
+                        old_output.logits / args.temperature, batch["labels"]
+                    )
+                    ref_logp, _ = token_logp(
+                        reference(**batch).logits / args.temperature, batch["labels"]
+                    )
                     if stage == "ppo":
                         values = old_output.value_estimates[:, :-1]
                         token_rewards = -args.beta * (old_logp - ref_logp) * mask
-                        last = mask.long().sum(-1) + width - 2
-                        token_rewards[torch.arange(mask.size(0), device=device), last] += rewards
+                        final_token = mask.long().sum(-1) + width - 2
+                        batch_indices = torch.arange(mask.size(0), device=device)
+                        token_rewards[batch_indices, final_token] += rewards
                         advantages, returns = gae(token_rewards, values, mask)
                     else:
-                        advantages = grpo_advantages(rewards, args.group_size)[:, None].expand_as(old_logp)
+                        advantages = grpo_advantages(rewards, args.group_size)[
+                            :, None
+                        ].expand_as(old_logp)
                 output = active(**batch)
-                logp, mask = token_logp(output.logits / args.temperature, batch["labels"])
+                logp, mask = token_logp(
+                    output.logits / args.temperature, batch["labels"]
+                )
                 loss = ppo_loss(logp, old_logp, advantages, mask)
                 if stage == "ppo":
                     loss = loss + 0.5 * masked_mean(
                         (output.value_estimates[:, :-1] - returns).square(), mask
                     )
                 else:
-                    loss = loss + args.beta * masked_mean(sampled_kl(logp, ref_logp), mask)
+                    loss = loss + args.beta * masked_mean(
+                        sampled_kl(logp, ref_logp), mask
+                    )
                 return loss + output.aux_loss
+
         else:
+
             def build_batch(index):
                 rows = [records[record_index(index, j)] for j in range(args.batch_size)]
                 return to_device(
@@ -354,6 +414,7 @@ def execute(args):
                 if teacher is not None:
                     with torch.no_grad():
                         teacher_output = teacher(**batch)
+                    # Keep direct token supervision alongside the teacher distribution.
                     loss = 0.5 * loss + 0.5 * distill_loss(
                         output.logits, teacher_output.logits, batch["labels"]
                     )
@@ -378,8 +439,12 @@ def execute(args):
             "losses": losses,
             "gradient_norms_before_clipping": gradient_norms,
             "seconds": time.perf_counter() - started,
-            "parameters": sum(p.numel() for p in raw.parameters()),
-            "trainable_parameters": sum(p.numel() for p in raw.parameters() if p.requires_grad),
+            "parameters": sum(
+                parameter.numel() for parameter in unwrapped.parameters()
+            ),
+            "trainable_parameters": sum(
+                parameter.numel() for parameter in trainable_parameters
+            ),
             "teacher_random_initialization": stage == "distill"
             and not bool(args.teacher_checkpoint),
         }
@@ -400,11 +465,11 @@ def execute(args):
             print(json.dumps(result), flush=True)
         model = unwrap(model)
         if stage == "lora":
+            # Later stages and reference policies should consume a plain decoder.
             model = merge_adapters(model)
         if stage == "ppo":
             model = model.actor
     if primary():
-        model.config.tie_word_embeddings = True
         model.config._name_or_path = ""
         model.save_pretrained(Path(args.output) / "hf", safe_serialization=True)
         tokenizer.save_pretrained(Path(args.output) / "hf")
@@ -433,7 +498,11 @@ def parser():
     cli.add_argument("--accumulation", type=int, default=1)
     cli.add_argument("--device", default="auto")
     cli.add_argument("--precision", choices=["fp32", "bf16", "fp16"], default="fp32")
-    cli.add_argument("--reward", choices=["exact_match", "synthetic_token_distance"], default="exact_match")
+    cli.add_argument(
+        "--reward",
+        choices=["exact_match", "synthetic_token_distance"],
+        default="exact_match",
+    )
     cli.add_argument("--seed", type=int, default=42)
     cli.add_argument("--resume")
     cli.add_argument("--init-checkpoint")

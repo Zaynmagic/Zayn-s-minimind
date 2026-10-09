@@ -1,5 +1,3 @@
-# Check loss, perplexity, and cached decoding.
-
 import argparse
 import json
 from pathlib import Path
@@ -11,7 +9,9 @@ from .data import read_records, stack_rows
 
 @torch.no_grad()
 def greedy(model, ids, tokens=8, cache=True):
-    result, past, current = ids.clone(), None, ids
+    result = ids.clone()
+    past = None
+    current = ids
     for _ in range(tokens):
         output = model(input_ids=current, past_key_values=past, use_cache=cache)
         next_id = output.logits[:, -1].argmax(-1, keepdim=True)
@@ -30,20 +30,25 @@ def main(args):
         stack_rows(rows[i : i + 2], tokenizer, args.length, args.pretrain)
         for i in range(0, len(rows), 2)
     ]
-    numerator, count = 0.0, 0
+    total_loss = 0.0
+    supervised_tokens = 0
     with torch.no_grad():
         for batch in batches:
             output = model(**batch)
             valid = batch["labels"][:, 1:].ne(-100).sum().item()
-            numerator += output.loss.item() * valid
-            count += valid
-        ids = torch.tensor([tokenizer.encode("What is 2 + 3?", add_special_tokens=False)])
-        cached, uncached = (greedy(model, ids, cache=True), greedy(model, ids, cache=False))
+            total_loss += output.loss.item() * valid
+            supervised_tokens += valid
+        ids = torch.tensor(
+            [tokenizer.encode("What is 2 + 3?", add_special_tokens=False)]
+        )
+        cached = greedy(model, ids, cache=True)
+        uncached = greedy(model, ids, cache=False)
+    mean_loss = total_loss / supervised_tokens
     result = {
         "data": args.data,
-        "supervised_tokens": count,
-        "nll": numerator / count,
-        "perplexity": float(torch.exp(torch.tensor(numerator / count))),
+        "supervised_tokens": supervised_tokens,
+        "nll": mean_loss,
+        "perplexity": float(torch.exp(torch.tensor(mean_loss))),
         "cached_greedy_equal": torch.equal(cached, uncached),
         "sample": tokenizer.decode(cached[0], skip_special_tokens=True),
         "interpretation": "Perplexity is for this dataset only; toy data isn't a benchmark.",

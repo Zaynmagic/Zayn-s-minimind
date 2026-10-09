@@ -1,5 +1,3 @@
-# AMP, DDP, gradient accumulation, and checkpoints.
-
 from contextlib import nullcontext
 import json
 import os
@@ -38,7 +36,9 @@ def unwrap(model):
 def wrap(model, device):
     if not dist.is_initialized():
         return model
-    return DistributedDataParallel(model, device_ids=[device.index] if device.type == "cuda" else None)
+    return DistributedDataParallel(
+        model, device_ids=[device.index] if device.type == "cuda" else None
+    )
 
 
 def amp_context(device, precision):
@@ -46,21 +46,34 @@ def amp_context(device, precision):
         return nullcontext()
     if precision == "fp16" and device.type != "cuda":
         raise ValueError("fp16 training requires CUDA; use fp32 or bf16 on CPU")
-    return torch.autocast(device.type, dtype=torch.float16 if precision == "fp16" else torch.bfloat16)
+    return torch.autocast(
+        device.type, dtype=torch.float16 if precision == "fp16" else torch.bfloat16
+    )
 
 
-def optimize(model, optimizer, batches, objective, device, precision="fp32", accumulation=1, scaler=None):
+def optimize(
+    model,
+    optimizer,
+    batches,
+    objective,
+    device,
+    precision="fp32",
+    accumulation=1,
+    scaler=None,
+):
     if accumulation < 1:
         raise ValueError("accumulation must be positive")
-    scaler = scaler or torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and precision == "fp16")
+    scaler = scaler or torch.amp.GradScaler(
+        "cuda", enabled=device.type == "cuda" and precision == "fp16"
+    )
     losses = []
     gradient_norms = []
     model.train()
     for start in range(0, len(batches), accumulation):
+        # Lazy batches keep only this accumulation window on the device.
         window = batches[start : start + accumulation]
         optimizer.zero_grad(set_to_none=True)
         for index, batch in enumerate(window):
-            # The last window can be shorter than accumulation.
             sync = (
                 model.no_sync()
                 if isinstance(model, DistributedDataParallel)
@@ -71,10 +84,14 @@ def optimize(model, optimizer, batches, objective, device, precision="fp32", acc
                 loss = objective(model, batch)
                 if not torch.isfinite(loss):
                     raise FloatingPointError("nonfinite loss")
+                # Average over this window so a short final window is not underweighted.
                 scaler.scale(loss / len(window)).backward()
             losses.append(loss.item())
         scaler.unscale_(optimizer)
-        norm = torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.0)
+        trainable = [
+            parameter for parameter in model.parameters() if parameter.requires_grad
+        ]
+        norm = torch.nn.utils.clip_grad_norm_(trainable, 1.0)
         if not torch.isfinite(norm):
             raise FloatingPointError("nonfinite gradient norm")
         gradient_norms.append(float(norm))
@@ -84,13 +101,13 @@ def optimize(model, optimizer, batches, objective, device, precision="fp32", acc
 
 
 def save_checkpoint(path, model, optimizer, scaler, stage, step):
-    raw = unwrap(model)
+    unwrapped = unwrap(model)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     state = {
-        "model": raw.state_dict(),
+        "model": unwrapped.state_dict(),
         "optimizer": optimizer.state_dict(),
         "scaler": scaler.state_dict(),
-        "config": raw.config.to_dict(),
+        "config": unwrapped.config.to_dict(),
         "stage": stage,
         "step": step,
         "torch_rng": torch.get_rng_state(),
@@ -118,4 +135,6 @@ def load_checkpoint(path, model, optimizer=None, scaler=None):
 
 def write_json(path, value):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    Path(path).write_text(
+        json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )

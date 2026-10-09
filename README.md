@@ -1,66 +1,65 @@
-# Zayn's MiniMind
+# MiniMind
 
-A compact PyTorch project for training a small decoder language model. It includes pretraining, supervised fine-tuning, LoRA, DPO, PPO, GRPO, mixture-of-experts training, and distillation through one command-line pipeline.
+**64M-parameter language model · PyTorch**
 
-The architecture and tokenizer are adapted from [MiniMind](https://github.com/jingyaogong/minimind). This implementation adds lazy training batches, explicit attention masks for cached and padded sequences, configuration checks, resumable training, and focused regression tests. Model parameter names and tokenizer IDs stay compatible with the source model. See [NOTICE](NOTICE) for attribution and changes.
+A practice implementation of a decoder-only Transformer and its training pipeline, following the MiniMind architecture. The full configuration has **63,912,192 parameters** and a **6,400-token BPE tokenizer**.
 
-## Install
+## Project overview
 
-Use Python 3.10 or newer and install a PyTorch build suitable for your CPU or CUDA device:
+| Area | What is implemented | Code |
+| --- | --- | --- |
+| Model architecture | Grouped-query attention, RoPE, RMSNorm, and SwiGLU | [Decoder](model/model_minimind.py), [64M config](configs/64m.json), [tokenizer](model/tokenizer.json) |
+| Training pipeline | Pretraining, SFT, LoRA, DPO, PPO/GRPO, MoE, and knowledge distillation | [Training stages](training/run.py), [objectives](training/objectives.py), [LoRA](model/model_lora.py) |
+| Training and inference | AMP, gradient accumulation, CPU/CUDA DDP, and KV-cached decoding | [Training engine](training/engine.py), [model and generation](model/model_minimind.py), [evaluation](training/evaluate.py) |
+
+The project keeps stage orchestration in one pipeline and encodes batches only when needed. Dense checkpoints also initialize the companion [MiniMind-V](https://github.com/Zaynmagic/Zayn-s-minimindv) project. Model parameter names and tokenizer IDs stay compatible across the two projects.
+
+Model and tokenizer foundations are adapted from [MiniMind](https://github.com/jingyaogong/minimind); see [NOTICE](NOTICE) for source details and modifications.
+
+## Setup and checks
+
+Python 3.10+. Install the PyTorch build appropriate for your CPU or CUDA device.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
-```
-
-## Quick check
-
-The repository includes small English arithmetic fixtures. They check the training code; they do not train a useful assistant.
-
-```bash
+python -m pip install -r requirements-dev.txt
 python -m pytest -q
 python -m training.run --steps 2 --reward synthetic_token_distance --allow-random-teacher --output runs/smoke
 python -m training.evaluate --model runs/smoke/hf --data data/synthetic/eval.jsonl --output runs/smoke/evaluation.json
 ```
 
-The smoke command runs all eight stages with a tiny configuration. Its token-distance reward and randomly initialized teacher are test fixtures. The MoE stage starts a new model, and the final distillation stage continues that MoE model. Earlier dense checkpoints remain in the run folder.
+For runtime dependencies alone, use `requirements.txt`. The bundled arithmetic data, token-distance reward, and random teacher are smoke-test fixtures. Regenerate the data with `python -m training.fixtures`.
 
-## Train
+## Training
 
 ```bash
-python -m training.run --config configs/64m.json --stages pretrain,sft --data /path/to/corpus --steps 10000 --batch-size 8 --length 512 --accumulation 4 --precision bf16 --output runs/dense
+python -m training.run --config configs/64m.json --stages pretrain,sft \
+  --data /path/to/corpus --steps 10000 --batch-size 8 --length 512 \
+  --accumulation 4 --precision bf16 --output runs/dense
 ```
 
-`configs/tiny.json` is for quick checks; `configs/64m.json` configures the larger dense model. `--steps` counts microbatches, and input rows cycle when the dataset ends. Only the current accumulation window is encoded and moved to the device; the JSONL records themselves are held in host memory.
+`configs/tiny.json` is the default for quick runs. `--steps` counts microbatches; records cycle at the end of the dataset. Encoding happens one accumulation window at a time to limit device memory. JSONL records remain in host memory.
 
-The corpus directory needs one file per selected data type:
+The data directory contains the files needed by the selected stages:
 
 - `pretrain.jsonl`: `{"text":"A paragraph of training text."}`
 - `sft.jsonl`: `{"conversations":[{"role":"user","content":"What is 2 + 3?"},{"role":"assistant","content":"5"}]}`
-- `dpo.jsonl`: objects with `chosen` and `rejected` conversation arrays in the same message format.
+- `dpo.jsonl`: `chosen` and `rejected` conversation arrays using the same message format.
 
-PPO and GRPO use the final assistant answer in each SFT row for an exact-match reward and require `--accumulation 1`. Replace that reward for open-ended tasks. Distillation requires `--teacher-checkpoint` with model weights and configuration; the teacher and student must share token IDs. Use `--stages moe` for a separate mixture-of-experts run.
+PPO/GRPO use the last assistant answer as an exact-match target and require `--accumulation 1` and zero dropout. Distillation takes `--teacher-checkpoint` with configuration and weights sharing the student's token IDs. The MoE stage starts a fresh model because its expert weights differ from the dense model; stages after it continue that model.
 
-Start a dense stage from a checkpoint with `--init-checkpoint runs/dense/sft.pt`. The same dense checkpoint can initialize the companion [Zayn's MiniMind-V](https://github.com/Zaynmagic/Zayn-s-minimindv) project.
+## Checkpoints
 
-## Resume and distributed training
+Every stage saves a checkpoint; the final model is exported under `<output>/hf/`. Load an export with `MiniMindForCausalLM.from_pretrained(...)`, as shown in `training/evaluate.py`. Use `--init-checkpoint runs/dense/sft.pt` for another dense run. The same checkpoint initializes [MiniMind-V](https://github.com/Zaynmagic/Zayn-s-minimindv) through its `--llm-checkpoint` option.
 
 ```bash
-python -m training.run --config configs/64m.json --stages sft --data /path/to/corpus --resume runs/dense/sft.pt --steps 1000 --output runs/resumed
-python -m torch.distributed.run --standalone --nproc_per_node=2 -m training.run --stages pretrain,sft,moe --steps 3 --accumulation 2 --output runs/ddp
+python -m training.run --config configs/64m.json --stages sft --data /path/to/corpus \
+  --resume runs/dense/sft.pt --steps 1000 --output runs/resumed
+python -m torch.distributed.run --standalone --nproc_per_node=2 -m training.run \
+  --stages pretrain,sft,moe --steps 3 --accumulation 2 --output runs/ddp
 ```
 
-Resume supports pretrain, SFT, and MoE and restores the optimizer, scaler, RNG state, and data offset. Keep the same configuration, dataset, batch size, and accumulation setting, and resume at an optimizer boundary. Distributed training uses Gloo on CPU and NCCL on CUDA. Load checkpoint files only from sources you trust; training checkpoints include Python state.
+Resume supports pretraining, SFT, and MoE. Keep the configuration, dataset, batch size, and accumulation setting unchanged, and resume at an optimizer boundary. DDP uses Gloo on CPU and NCCL on CUDA. Training checkpoints contain Python state, so load only trusted files. Model parameter keys and tokenizer IDs are preserved from the source architecture.
 
-Each run saves stage checkpoints, `metrics.json`, and a Hugging Face export under `hf/`. The export loads with `MiniMindForCausalLM.from_pretrained(...)`; `training.evaluate` shows the complete loading path. Checkpoints and run outputs are excluded from Git.
-
-## Layout
-
-- `model/`: decoder, LoRA adapters, and the 6,400-token BPE tokenizer.
-- `training/`: data preparation, objectives, optimizer engine, training CLI, and evaluation.
-- `configs/`: tiny and larger model configurations.
-- `data/synthetic/`: generated English examples; regenerate with `python -m training.fixtures`.
-- `tests/`: masking, cached decoding, optimizer, objective, export, and resume checks.
-
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0; see [LICENSE](LICENSE).
