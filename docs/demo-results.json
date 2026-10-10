@@ -35,13 +35,29 @@
     "sha256": "6ed9f71e69c02d07415378bbd2d7602aa65460534bc4ae556c4eec977b2127c1",
     "published": false
   },
-  "sample": {
-    "split": "training",
-    "prompt": "What is 2 + 3?",
-    "answer": "5",
-    "expected": "5",
-    "decoding": "greedy, chat template, KV cache, at most 16 new tokens"
-  },
+  "samples": [
+    {
+      "split": "training",
+      "prompt": "What is 2 + 3?",
+      "answer": "5",
+      "expected": "5",
+      "decoding": "greedy, chat template, KV cache, at most 16 new tokens"
+    },
+    {
+      "split": "training",
+      "prompt": "What is 7 + 3?",
+      "answer": "10",
+      "expected": "10",
+      "decoding": "greedy, chat template, KV cache, at most 16 new tokens"
+    },
+    {
+      "split": "held-out",
+      "prompt": "What is 8 + 5?",
+      "answer": "5",
+      "expected": "13",
+      "decoding": "greedy, chat template, KV cache, at most 16 new tokens"
+    }
+  ],
   "held_out_evaluation": {
     "data": "data/synthetic/eval.jsonl",
     "data_sha256": "fc701edfc6bbe1eebff3b7b5c081ad5d2bd88d839c9c63a957fc9d486f64c99b",
@@ -90,13 +106,15 @@
   "commands": [
     "python -m training.run --config configs/tiny.json --stages sft --data data/synthetic --steps 500 --batch-size 8 --length 96 --lr 0.001 --device cpu --seed 42 --output runs/portfolio-demo",
     "python -m examples.generate --model runs/portfolio-demo/hf --prompt \"What is 2 + 3?\"",
+    "python -m examples.generate --model runs/portfolio-demo/hf --prompt \"What is 7 + 3?\"",
+    "python -m examples.generate --model runs/portfolio-demo/hf --prompt \"What is 8 + 5?\"",
     "python -m training.evaluate --model runs/portfolio-demo/hf --data data/synthetic/eval.jsonl --output runs/portfolio-demo/evaluation.json"
   ],
   "limitations": [
-    "The displayed answer is a training example from 32 synthetic arithmetic conversations.",
+    "The first two displayed answers are training examples from 32 synthetic arithmetic conversations; the third is a held-out failure.",
     "This 0.51M-parameter demonstration does not measure the 64M configuration or general language-model quality.",
     "Held-out fixture answers are outside the training operand range. The model does not reliably generalize to them.",
     "NLL and perplexity cover the assistant targets, including the chat-template reasoning markers and end token; they are not answer-only arithmetic metrics.",
-    "The evaluator also prints a raw, untemplated cache-check continuation; the sample here uses the chat template used during SFT."
+    "The evaluator also prints a raw, untemplated cache-check continuation; the samples here use the chat template used during SFT."
   ]
 }

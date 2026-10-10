@@ -1,48 +1,10 @@
-# MiniMind
+[![CI](https://img.shields.io/github/actions/workflow/status/Zaynmagic/Zayn-s-minimind/tests.yml?branch=main&label=CI)](https://github.com/Zaynmagic/Zayn-s-minimind/actions/workflows/tests.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](requirements.txt)
 
-[![CI](https://github.com/Zaynmagic/Zayn-s-minimind/actions/workflows/tests.yml/badge.svg)](https://github.com/Zaynmagic/Zayn-s-minimind/actions/workflows/tests.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](requirements.txt)
+# MiniMind
 
 **64M-parameter language model · PyTorch**
 
 A practice implementation of a decoder-only Transformer and its training pipeline, following the MiniMind architecture. The full configuration has **63,912,192 parameters** and a **6,400-token BPE tokenizer**.
-
-## Example
-
-Actual greedy output from the **0.51M-parameter tiny configuration**, after 500 SFT updates on the bundled arithmetic fixtures:
-
-```text
-Question: What is 2 + 3?
-Answer: 5
-```
-
-This question is a training example. The run checks training, export, and chat generation; it does not measure the 64M model's language ability.
-
-| Tiny-model check | Result |
-| --- | ---: |
-| Training answers matched | 32 / 32 |
-| Held-out answers matched | 0 / 6 |
-| Held-out loss (NLL) | 2.8479 |
-| Held-out perplexity | 17.2515 |
-
-The six held-out questions use operands outside the training range. This run memorizes the training examples and does not generalize to that split. Loss covers 48 supervised tokens, including assistant template markers. [Recorded results and run details](docs/demo-results.json).
-
-<details>
-<summary>Reproduce the example and evaluation on CPU</summary>
-
-```bash
-python -m training.run --config configs/tiny.json --stages sft \
-  --data data/synthetic --steps 500 --batch-size 8 --length 96 \
-  --lr 0.001 --device cpu --seed 42 --output runs/portfolio-demo
-python -m examples.generate --model runs/portfolio-demo/hf --prompt "What is 2 + 3?"
-python -m training.evaluate --model runs/portfolio-demo/hf \
-  --data data/synthetic/eval.jsonl --output runs/portfolio-demo/evaluation.json
-```
-
-Install the runtime dependencies from the setup section first. Weights are generated locally; numerical results can vary slightly across environments.
-
-</details>
 
 ## Project overview
 
@@ -55,6 +17,47 @@ Install the runtime dependencies from the setup section first. Weights are gener
 The project keeps stage orchestration in one pipeline and encodes batches only when needed. Dense checkpoints also initialize the companion [MiniMind-V](https://github.com/Zaynmagic/Zayn-s-minimindv) project. Model parameter names and tokenizer IDs stay compatible across the two projects.
 
 Model and tokenizer foundations are adapted from [MiniMind](https://github.com/jingyaogong/minimind); see [NOTICE](NOTICE) for source details and modifications.
+
+## Example outputs
+
+Actual greedy replies from `runs/portfolio-demo/hf`: the **508,288-parameter** [tiny configuration](configs/tiny.json), trained for 500 CPU SFT updates on 32 bundled arithmetic fixtures.
+
+| Split | Question | Model answer | Expected |
+| --- | --- | --- | --- |
+| Training fixture | What is 2 + 3? | 5 | 5 |
+| Training fixture | What is 7 + 3? | 10 | 10 |
+| Held-out fixture | What is 8 + 5? | 5 | 13 |
+
+This run checks training, export, and chat generation. These tiny-model samples do not measure the 64M model's language ability. [Generation script](examples/generate.py).
+
+## Evaluation
+
+| Tiny-model check | Result |
+| --- | ---: |
+| Training exact match | 32 / 32 |
+| Held-out exact match | 0 / 6 |
+| Held-out loss (NLL) | 2.8479 |
+| Held-out perplexity | 17.2515 |
+
+The six held-out questions use operands outside the training range; this run does not generalize to them. Loss covers 48 supervised tokens, including assistant template markers. [Recorded results, checkpoint hash, and run details](docs/demo-results.json).
+
+<details>
+<summary>Reproduce the examples and evaluation on CPU</summary>
+
+```bash
+python -m training.run --config configs/tiny.json --stages sft \
+  --data data/synthetic --steps 500 --batch-size 8 --length 96 \
+  --lr 0.001 --device cpu --seed 42 --output runs/portfolio-demo
+python -m examples.generate --model runs/portfolio-demo/hf --prompt "What is 2 + 3?"
+python -m examples.generate --model runs/portfolio-demo/hf --prompt "What is 7 + 3?"
+python -m examples.generate --model runs/portfolio-demo/hf --prompt "What is 8 + 5?"
+python -m training.evaluate --model runs/portfolio-demo/hf \
+  --data data/synthetic/eval.jsonl --output runs/portfolio-demo/evaluation.json
+```
+
+Install the runtime dependencies from the setup section first. Weights are generated locally; numerical results can vary slightly across environments.
+
+</details>
 
 ## Setup and checks
 
