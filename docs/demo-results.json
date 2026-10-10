@@ -1,0 +1,102 @@
+{
+  "description": "Tiny arithmetic fixture demonstration of SFT, export, chat formatting, and evaluation.",
+  "source_commit": "fdc07a1fe7f28616692b2d190e96891ce5e26948",
+  "started_utc": "2026-10-10T03:02:44.120604+00:00",
+  "runtime": {
+    "python": "3.11.0",
+    "torch": "2.8.0",
+    "transformers": "4.57.6",
+    "device": "cpu",
+    "precision": "fp32"
+  },
+  "training": {
+    "config": "configs/tiny.json",
+    "config_sha256": "8a5c573a8bd8514213251601b30553516af8cefe1d9da87b483c44e6b1fce6e3",
+    "parameters": 508288,
+    "seed": 42,
+    "stage": "sft",
+    "optimizer_steps": 500,
+    "batch_size": 8,
+    "length": 96,
+    "learning_rate": 0.001,
+    "first_batch_loss": 8.5238676071167,
+    "last_batch_loss": 0.014586000703275204,
+    "records": 32,
+    "supervised_tokens": 256,
+    "data": "data/synthetic/sft.jsonl",
+    "data_sha256": "fadf9276292611bc8ba410736fcb57705dff1478d7f3c2613086cc4eabe746c4",
+    "exact_match": {
+      "correct": 32,
+      "total": 32
+    }
+  },
+  "checkpoint": {
+    "path": "runs/portfolio-demo/hf/model.safetensors",
+    "sha256": "6ed9f71e69c02d07415378bbd2d7602aa65460534bc4ae556c4eec977b2127c1",
+    "published": false
+  },
+  "sample": {
+    "split": "training",
+    "prompt": "What is 2 + 3?",
+    "answer": "5",
+    "expected": "5",
+    "decoding": "greedy, chat template, KV cache, at most 16 new tokens"
+  },
+  "held_out_evaluation": {
+    "data": "data/synthetic/eval.jsonl",
+    "data_sha256": "fc701edfc6bbe1eebff3b7b5c081ad5d2bd88d839c9c63a957fc9d486f64c99b",
+    "records": 6,
+    "supervised_tokens": 48,
+    "nll": 2.8478973706563315,
+    "perplexity": 17.251468658447266,
+    "cached_greedy_equal": true,
+    "exact_match": {
+      "correct": 0,
+      "total": 6
+    },
+    "predictions": [
+      {
+        "prompt": "What is 8 + 5?",
+        "expected": "13",
+        "answer": "5"
+      },
+      {
+        "prompt": "What is 8 + 6?",
+        "expected": "14",
+        "answer": "6"
+      },
+      {
+        "prompt": "What is 8 + 7?",
+        "expected": "15",
+        "answer": "7"
+      },
+      {
+        "prompt": "What is 9 + 5?",
+        "expected": "14",
+        "answer": "5"
+      },
+      {
+        "prompt": "What is 9 + 6?",
+        "expected": "15",
+        "answer": "6"
+      },
+      {
+        "prompt": "What is 9 + 7?",
+        "expected": "16",
+        "answer": "7"
+      }
+    ]
+  },
+  "commands": [
+    "python -m training.run --config configs/tiny.json --stages sft --data data/synthetic --steps 500 --batch-size 8 --length 96 --lr 0.001 --device cpu --seed 42 --output runs/portfolio-demo",
+    "python -m examples.generate --model runs/portfolio-demo/hf --prompt \"What is 2 + 3?\"",
+    "python -m training.evaluate --model runs/portfolio-demo/hf --data data/synthetic/eval.jsonl --output runs/portfolio-demo/evaluation.json"
+  ],
+  "limitations": [
+    "The displayed answer is a training example from 32 synthetic arithmetic conversations.",
+    "This 0.51M-parameter demonstration does not measure the 64M configuration or general language-model quality.",
+    "Held-out fixture answers are outside the training operand range. The model does not reliably generalize to them.",
+    "NLL and perplexity cover the assistant targets, including the chat-template reasoning markers and end token; they are not answer-only arithmetic metrics.",
+    "The evaluator also prints a raw, untemplated cache-check continuation; the sample here uses the chat template used during SFT."
+  ]
+}

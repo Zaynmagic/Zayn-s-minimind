@@ -1,8 +1,48 @@
 # MiniMind
 
+[![CI](https://github.com/Zaynmagic/Zayn-s-minimind/actions/workflows/tests.yml/badge.svg)](https://github.com/Zaynmagic/Zayn-s-minimind/actions/workflows/tests.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](requirements.txt)
+
 **64M-parameter language model · PyTorch**
 
 A practice implementation of a decoder-only Transformer and its training pipeline, following the MiniMind architecture. The full configuration has **63,912,192 parameters** and a **6,400-token BPE tokenizer**.
+
+## Example
+
+Actual greedy output from the **0.51M-parameter tiny configuration**, after 500 SFT updates on the bundled arithmetic fixtures:
+
+```text
+Question: What is 2 + 3?
+Answer: 5
+```
+
+This question is a training example. The run checks training, export, and chat generation; it does not measure the 64M model's language ability.
+
+| Tiny-model check | Result |
+| --- | ---: |
+| Training answers matched | 32 / 32 |
+| Held-out answers matched | 0 / 6 |
+| Held-out loss (NLL) | 2.8479 |
+| Held-out perplexity | 17.2515 |
+
+The six held-out questions use operands outside the training range. This run memorizes the training examples and does not generalize to that split. Loss covers 48 supervised tokens, including assistant template markers. [Recorded results and run details](docs/demo-results.json).
+
+<details>
+<summary>Reproduce the example and evaluation on CPU</summary>
+
+```bash
+python -m training.run --config configs/tiny.json --stages sft \
+  --data data/synthetic --steps 500 --batch-size 8 --length 96 \
+  --lr 0.001 --device cpu --seed 42 --output runs/portfolio-demo
+python -m examples.generate --model runs/portfolio-demo/hf --prompt "What is 2 + 3?"
+python -m training.evaluate --model runs/portfolio-demo/hf \
+  --data data/synthetic/eval.jsonl --output runs/portfolio-demo/evaluation.json
+```
+
+Install the runtime dependencies from the setup section first. Weights are generated locally; numerical results can vary slightly across environments.
+
+</details>
 
 ## Project overview
 
